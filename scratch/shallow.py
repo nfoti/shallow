@@ -26,7 +26,6 @@ from mne.externals.h5io import read_hdf5, write_hdf5
 
 import tensorflow as tf
 import numpy as np
-#from vae import nnet
 
 
 # Entries in structurals and subjects must correspoond,
@@ -65,6 +64,8 @@ def load_subject_objects(megdatadir, subj, struct):
     evoked_info = mne.io.read_info(fname_epochs)
     cov = inv['noise_cov']
 
+    print("  %s: -- finished loading meg objects" % subj)
+
     return subj, fwd, inv, cov, evoked_info
 
 
@@ -82,10 +83,56 @@ def gen_evoked_subject(signal, fwd, cov, evoked_info, dt, noise_snr,
     return evoked, stc
 
 
-def make_network():
-    """Create neural network"""
-    net = None
-    return net
+def weight_variable(shape):
+    init = tf.truncated_normal(shape, stddev=0.11)
+    return tf.Variable(init)
+
+def bias_variable(shape):
+    init = tf.constant(0.1, shape=shape)
+    return tf.Variable(init)
+
+def make_tanh_network(sensor_dim, source_dim):
+
+    x_sensor = tf.placeholder(tf.float32, shape=[None, sensor_dim], name="x_sensor")
+
+    W1 = weight_variable([sensor_dim, source_dim//2])
+    b1 = bias_variable([source_dim//2])
+    h1 = tf.nn.tanh(tf.matmul(x_sensor, W1) + b1)
+
+    W2 = weight_variable([source_dim//2, source_dim])
+    b2 = bias_variable([source_dim])
+    h2 = tf.nn.tanh(tf.matmul(h1, W2) + b2)
+
+    W3 = weight_variable([source_dim, source_dim])
+    b3 = bias_variable([source_dim])
+    yhat = tf.nn.tanh(tf.matmul(h2, W3) + b3)
+
+    return yhat, h1, h2, x_sensor
+
+
+def sparse_objective(sensor_dim, source_dim, yhat, h1, h2, sess):
+
+    y_source = tf.placeholder(tf.float32, shape=[None, source_dim], name="y_source")
+    rho = tf.placeholder(tf.float32, shape=(), name="rho")
+    lam = tf.placeholder(tf.float32, shape=(), name="lam")
+
+    diff = y_source - yhat
+    error = tf.reduce_sum(tf.squared_difference(y_source, yhat))
+
+    # Remap activations to [0,1]
+    a1 = 0.5*h1 + 0.5
+    a2 = 0.5*h2 + 0.5
+
+    kl_bernoulli_h1 = (rho*(tf.log(rho) - tf.log(a1+1e-6)
+                      + (1-rho)*(tf.log(1-rho) - tf.log(1-a1+1e-6))))
+    kl_bernoulli_h2 = (rho*(tf.log(rho) - tf.log(a2+1e-6)
+                      + (1-rho)*(tf.log(1-rho) - tf.log(1-a2+1e-6))))
+    regularizer = (tf.reduce_sum(kl_bernoulli_h1)
+                   + tf.reduce_sum(kl_bernoulli_h2))
+
+    cost = error + lam*regularizer
+
+    return cost, y_source, rho, lam
 
 
 if __name__ == "__main__":
@@ -107,21 +154,48 @@ if __name__ == "__main__":
     dt = 0.001
     noise_snr = np.inf
 
+    niter = 100
+    rho = 0.05
+    lam = 1.
+
     # Get subject info and create data
     subj, fwd, inv, cov, evoked_info = load_subject_objects(megdir, subj,
                                                             struct)
     n_verts = fwd['src'][0]['nuse'] + fwd['src'][1]['nuse']
     sim_vert_data = np.random.randn(n_verts, n_times)
 
+    print("applying forward operator")
     evoked, stc = gen_evoked_subject(sim_vert_data, fwd, cov, evoked_info, dt,
                                      noise_snr)
 
-    # Create neural network
-    # net = make_net()
+    print("building neural net")
+    sess = tf.Session()
 
-    # Train net
-    #   Make data iterator for tensorflow
-    #   Save checkpoints after training each batch
-    #   Visualize training loss
+    # Create neural network
+    sensor_dim = evoked.data.shape[0]
+    source_dim = n_verts
+    
+    yhat, h1, h2, x_sensor = make_tanh_network(sensor_dim, source_dim)
+    sparse_cost, y_source, tf_rho, tf_lam = sparse_objective(sensor_dim, source_dim,
+                                                       yhat, h1, h2, sess)
+
+    train_step = tf.train.AdamOptimizer(1e-4).minimize(sparse_cost) 
+
+    sess.run(tf.initialize_all_variables())
+
+    x_sens = np.ascontiguousarray(evoked.data.T)
+    x_sens /= np.max(np.abs(x_sens))
+    y_src = np.ascontiguousarray(sim_vert_data.T)
+    y_src /= np.max(np.abs(y_src))
+
+    print("optimizing...")
+    niter = 100
+    for i in xrange(niter):
+        _, obj = sess.run([train_step, sparse_cost],
+                          feed_dict={x_sensor: x_sens, y_source: y_src,
+                                     tf_rho: rho, tf_lam: lam}
+                         )
+
+        print("  it: %d i, cost: %.2f" % (i+1, obj))
 
     # Evaluate net
