@@ -83,27 +83,40 @@ def gen_evoked_subject(signal, fwd, cov, evoked_info, dt, noise_snr,
     return evoked, stc
 
 
+def get_data_batch(x_data, y_label, batch_num, batch_size):
+    """Function to get a random sampling of an evoked and stc pair"""
+
+    # Get random sampling of data, seed by batch num
+    np.random.seed(batch_num)
+    rand_inds = np.random.randint(x_data.shape[0], size=batch_size)
+
+    return x_data[rand_inds, :], y_label[rand_inds, :]
+
+
 def weight_variable(shape):
     init = tf.truncated_normal(shape, stddev=0.11)
     return tf.Variable(init)
+
 
 def bias_variable(shape):
     init = tf.constant(0.1, shape=shape)
     return tf.Variable(init)
 
+
 def make_tanh_network(sensor_dim, source_dim):
+    """Function to create neural network"""
 
     x_sensor = tf.placeholder(tf.float32, shape=[None, sensor_dim], name="x_sensor")
 
-    W1 = weight_variable([sensor_dim, source_dim//2])
-    b1 = bias_variable([source_dim//2])
+    W1 = weight_variable([sensor_dim, source_dim // 2])
+    b1 = bias_variable([source_dim // 2])
     h1 = tf.nn.tanh(tf.matmul(x_sensor, W1) + b1)
 
-    W2 = weight_variable([source_dim//2, source_dim])
-    b2 = bias_variable([source_dim])
+    W2 = weight_variable([source_dim // 2, source_dim // 2])
+    b2 = bias_variable([source_dim // 2])
     h2 = tf.nn.tanh(tf.matmul(h1, W2) + b2)
 
-    W3 = weight_variable([source_dim, source_dim])
+    W3 = weight_variable([source_dim // 2, source_dim])
     b3 = bias_variable([source_dim])
     yhat = tf.nn.tanh(tf.matmul(h2, W3) + b3)
 
@@ -120,8 +133,8 @@ def sparse_objective(sensor_dim, source_dim, yhat, h1, h2, sess):
     error = tf.reduce_sum(tf.squared_difference(y_source, yhat))
 
     # Remap activations to [0,1]
-    a1 = 0.5*h1 + 0.5
-    a2 = 0.5*h2 + 0.5
+    a1 = 0.5 * h1 + 0.5
+    a2 = 0.5 * h2 + 0.5
 
     kl_bernoulli_h1 = (rho*(tf.log(rho) - tf.log(a1+1e-6)
                       + (1-rho)*(tf.log(1-rho) - tf.log(1-a1+1e-6))))
@@ -149,12 +162,13 @@ if __name__ == "__main__":
         struct = argv['--subj']
         subj = subjects[structurals.index(struct)]
 
-    # Params
-    n_times = 250
+    # Set params
+    n_data_times = 2000
     dt = 0.001
     noise_snr = np.inf
+    batch_size = 1000
 
-    niter = 100
+    n_iter = int(1e4)
     rho = 0.05
     lam = 1.
 
@@ -162,40 +176,45 @@ if __name__ == "__main__":
     subj, fwd, inv, cov, evoked_info = load_subject_objects(megdir, subj,
                                                             struct)
     n_verts = fwd['src'][0]['nuse'] + fwd['src'][1]['nuse']
-    sim_vert_data = np.random.randn(n_verts, n_times)
+    sim_vert_data = np.random.randn(n_verts, n_data_times)
 
-    print("applying forward operator")
+    print("Simulating and normalizing data")
     evoked, stc = gen_evoked_subject(sim_vert_data, fwd, cov, evoked_info, dt,
                                      noise_snr)
+    # Normalize data to lie between -1 and 1
+    x_sens_all = np.ascontiguousarray(evoked.data.T)
+    x_sens_all /= np.max(np.abs(x_sens_all))
+    y_src_all = np.ascontiguousarray(sim_vert_data.T)
+    y_src_all /= np.max(np.abs(y_src_all))
 
-    print("building neural net")
+    print("Building neural net")
     sess = tf.Session()
 
-    # Create neural network
     sensor_dim = evoked.data.shape[0]
     source_dim = n_verts
-    
-    yhat, h1, h2, x_sensor = make_tanh_network(sensor_dim, source_dim)
-    sparse_cost, y_source, tf_rho, tf_lam = sparse_objective(sensor_dim, source_dim,
-                                                       yhat, h1, h2, sess)
 
-    train_step = tf.train.AdamOptimizer(1e-4).minimize(sparse_cost) 
+    yhat, h1, h2, x_sensor = make_tanh_network(sensor_dim, source_dim)
+    sparse_cost, y_source, tf_rho, tf_lam = sparse_objective(sensor_dim,
+                                                             source_dim, yhat,
+                                                             h1, h2, sess)
+
+    train_step = tf.train.AdamOptimizer(1e-4).minimize(sparse_cost)
 
     sess.run(tf.initialize_all_variables())
+    print("\nSim params\nn_iter: {}\nn_data_points: {}\nSNR: \
+          {}\nbatch_size: {}\n".format(n_iter, n_data_times, str(noise_snr),
+                                       batch_size))
+    print("Optimizing...")
+    for ii in xrange(n_iter):
+        # Get random batch of data
+        x_sens_batch, y_src_batch = get_data_batch(x_sens_all, y_src_all, ii,
+                                                   batch_size)
 
-    x_sens = np.ascontiguousarray(evoked.data.T)
-    x_sens /= np.max(np.abs(x_sens))
-    y_src = np.ascontiguousarray(sim_vert_data.T)
-    y_src /= np.max(np.abs(y_src))
+        feed_dict = {x_sensor: x_sens_batch, y_source: y_src_batch,
+                     tf_rho: rho, tf_lam: lam}
+        _, obj = sess.run([train_step, sparse_cost], feed_dict)
 
-    print("optimizing...")
-    niter = 100
-    for i in xrange(niter):
-        _, obj = sess.run([train_step, sparse_cost],
-                          feed_dict={x_sensor: x_sens, y_source: y_src,
-                                     tf_rho: rho, tf_lam: lam}
-                         )
-
-        print("  it: %d i, cost: %.2f" % (i+1, obj))
+        if ii % 10 == 0:
+            print("\titer: %d, cost: %.2f" % (ii, obj))
 
     # Evaluate net
