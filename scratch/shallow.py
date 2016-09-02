@@ -18,15 +18,19 @@ from __future__ import print_function
 import os
 import os.path as op
 
+import tensorflow as tf
+import numpy as np
+
 import mne
 from mne import SourceEstimate
 from mne.minimum_norm import read_inverse_operator
 from mne.simulation import simulate_sparse_stc, simulate_stc, simulate_evoked
 from mne.externals.h5io import read_hdf5, write_hdf5
 
-import tensorflow as tf
-import numpy as np
-
+from shallow_fun import (load_subject_objects, gen_evoked_subject,
+                         get_data_batch, get_all_vert_positions,
+                         get_largest_dip_positions, get_localization_metrics,
+                         eval_error_norm)
 
 # Entries in structurals and subjects must correspoond,
 # i.e. structurals[i] === subjects[i].
@@ -44,80 +48,39 @@ structurals = structurals[:-1]
 subjects = subjects[:-1]
 
 
-def load_subject_objects(megdatadir, subj, struct):
-
-    print("  %s: -- loading meg objects" % subj)
-
-    fname_fwd = op.join(megdatadir, subj, 'forward',
-                        '%s-sss-fwd.fif' % subj)
-    fwd = mne.read_forward_solution(fname_fwd, force_fixed=True, surf_ori=True)
-
-    fname_inv = op.join(megdatadir, subj, 'inverse',
-                        '%s-55-sss-meg-eeg-fixed-inv.fif' % subj)
-    inv = read_inverse_operator(fname_inv)
-
-    fname_epochs = op.join(megdatadir, subj, 'epochs',
-                           'All_55-sss_%s-epo.fif' % subj)
-    #epochs = mne.read_epochs(fname_epochs)
-    #evoked = epochs.average()
-    #evoked_info = evoked.info
-    evoked_info = mne.io.read_info(fname_epochs)
-    cov = inv['noise_cov']
-
-    print("  %s: -- finished loading meg objects" % subj)
-
-    return subj, fwd, inv, cov, evoked_info
-
-
-def gen_evoked_subject(signal, fwd, cov, evoked_info, dt, noise_snr,
-                       seed=None):
-    """Function to generate evoked and stc from signal array"""
-
-    vertices = [fwd['src'][0]['vertno'], fwd['src'][1]['vertno']]
-    stc = SourceEstimate(signal, vertices, tmin=0, tstep=dt)
-
-    evoked = simulate_evoked(fwd, stc, evoked_info, cov, noise_snr,
-                             random_state=seed)
-    evoked.add_eeg_average_proj()
-
-    return evoked, stc
-
-
-def get_data_batch(x_data, y_label, batch_num, batch_size):
-    """Function to get a random sampling of an evoked and stc pair"""
-
-    # Get random sampling of data, seed by batch num
-    np.random.seed(batch_num)
-    rand_inds = np.random.randint(x_data.shape[0], size=batch_size)
-
-    return x_data[rand_inds, :], y_label[rand_inds, :]
-
-
-def weight_variable(shape):
+def weight_variable(shape, name=None):
     init = tf.truncated_normal(shape, stddev=0.11)
+    if name is not None:
+        return tf.Variable(init, name=name)
+
     return tf.Variable(init)
 
 
-def bias_variable(shape):
+def bias_variable(shape, name=None):
     init = tf.constant(0.1, shape=shape)
+
+    if name is not None:
+        return tf.Variable(init, name=name)
+
     return tf.Variable(init)
 
 
 def make_tanh_network(sensor_dim, source_dim):
     """Function to create neural network"""
 
-    x_sensor = tf.placeholder(tf.float32, shape=[None, sensor_dim], name="x_sensor")
+    x_sensor = tf.placeholder(tf.float32, shape=[None, sensor_dim],
+                              name="x_sensor")
 
-    W1 = weight_variable([sensor_dim, source_dim // 2])
-    b1 = bias_variable([source_dim // 2])
+    W1 = weight_variable([sensor_dim, source_dim // 2], name='W1')
+    b1 = bias_variable([source_dim // 2], name='b1')
     h1 = tf.nn.tanh(tf.matmul(x_sensor, W1) + b1)
 
-    W2 = weight_variable([source_dim // 2, source_dim // 2])
-    b2 = bias_variable([source_dim // 2])
+    W2 = weight_variable([source_dim // 2, source_dim // 2], name='W2')
+    b2 = bias_variable([source_dim // 2], name='b2')
     h2 = tf.nn.tanh(tf.matmul(h1, W2) + b2)
 
-    W3 = weight_variable([source_dim // 2, source_dim])
-    b3 = bias_variable([source_dim])
+    W3 = weight_variable([source_dim // 2, source_dim], name='W3')
+    b3 = bias_variable([source_dim], name='b3')
     yhat = tf.nn.tanh(tf.matmul(h2, W3) + b3)
 
     return yhat, h1, h2, x_sensor
@@ -136,124 +99,16 @@ def sparse_objective(sensor_dim, source_dim, yhat, h1, h2, sess):
     a1 = 0.5 * h1 + 0.5
     a2 = 0.5 * h2 + 0.5
 
-    kl_bernoulli_h1 = (rho*(tf.log(rho) - tf.log(a1+1e-6)
-                      + (1-rho)*(tf.log(1-rho) - tf.log(1-a1+1e-6))))
-    kl_bernoulli_h2 = (rho*(tf.log(rho) - tf.log(a2+1e-6)
-                      + (1-rho)*(tf.log(1-rho) - tf.log(1-a2+1e-6))))
+    kl_bernoulli_h1 = (rho * (tf.log(rho) - tf.log(a1 + 1e-6) + (1 - rho) *
+                              (tf.log(1 - rho) - tf.log(1 - a1 + 1e-6))))
+    kl_bernoulli_h2 = (rho * (tf.log(rho) - tf.log(a2 + 1e-6) + (1 - rho) *
+                              (tf.log(1 - rho) - tf.log(1 - a2 + 1e-6))))
     regularizer = (tf.reduce_sum(kl_bernoulli_h1)
                    + tf.reduce_sum(kl_bernoulli_h2))
 
-    cost = error + lam*regularizer
+    cost = error + lam * regularizer
 
     return cost, y_source, rho, lam
-
-
-def eval_error_norm(src_data_orig, src_data_est):
-    """Function to compute norm of the error vector at each dipoe
-
-    Parameters
-    ----------
-
-    src_data_orig: numpy matrix size (n_samples x n_src)
-        Ground truth source estimate used to generate sensor data
-
-    src_data_est: numpy matrix (n_samples x n_src)
-        Source estimate of sensor data created using src_data_orig
-
-    Returns
-    -------
-    error_norm: np.array size(n_samples)
-        Norm of vector between true activation and estimated activation
-
-    """
-
-    #TODO: might want to normalize by number of vertices since subject source
-    #      spaces can have different number of dipoles
-
-    error_norm = np.zeros((src_data_orig.shape[0]))
-
-    for ri, (row_orig, row_est) in enumerate(zip(src_data_orig, src_data_est)):
-        error_norm[ri] = np.linalg.norm(row_orig - row_est)
-
-    return error_norm
-
-
-def get_all_vert_positions(src):
-    """Function to get 3-space position of used dipoles
-
-    Parameters
-    ----------
-    src: SourceSpaces
-        Source space object for subject. Needed to get dipole positions
-
-    Returns
-    -------
-    dip_pos: np.array shape(n_src x 3)
-        3-space positions of used dipoles
-    """
-    # Get vertex numbers and positions that are in use
-    # (usually ~4k - 5k out of ~150k)
-    left_vertno = src[0]['vertno']
-    right_vertno = src[1]['vertno']
-
-    vertnos = np.concatenate((left_vertno, right_vertno))
-    dip_pos = np.concatenate((src[0]['rr'][left_vertno, :],
-                              src[1]['rr'][right_vertno, :]))
-
-    return dip_pos
-
-
-def get_largest_dip_positions(data, n_verts, dip_pos):
-    """Function to get spatial centroid of highest activated dipoles
-
-    Parameters
-    ----------
-    data: np.array shape(n_times x n_src)
-        Source estimate data
-    n_verts: int
-        Number of vertices to use when computing maximum activation centroid
-    dip_pos: np.array shape(n_src x 3)
-        3-space positions of all dipoles in source space .
-
-    Returns
-    -------
-    avg_pos: np.array shape(n_times x 3)
-        Euclidean centroid of activation for largest `n_verts` activations
-    """
-
-    #TODO: How to handle negative current vals? Use abs?
-
-    # Initialize
-    largest_dip_pos = np.zeros((data.shape[0], n_verts, 3))
-
-    # Find largest `n_verts` dipoles at each time point and get position
-    for ti in range(data.shape[0]):
-        largest_dip_inds = data[ti, :].argsort()[-n_verts:]
-        largest_dip_pos[ti, :, :] = dip_pos[largest_dip_inds, :]
-
-    return largest_dip_pos
-
-
-def get_localization_metrics(true_pos, largest_dip_pos):
-    """Helper to get accuracy and point spread
-
-    Parameters
-    ----------
-    true_pos: np.array shape(n_times, 3)
-        3D position of dipole that was simulated active
-    largest_dip_pos: np.array shape(n_times, n_dipoles, 3)
-        3D positions of top `n_dipoles` dipoles with highest activation"""
-
-    centroids = np.mean(largest_dip_pos, axis=1)
-    accuracy = np.linalg.norm(true_pos - centroids)
-
-    # Calculate difference in x/y/z positions from true activation to each src
-    point_distance = np.subtract(largest_dip_pos, true_pos[:, np.newaxis, :])
-
-    # Calculate Euclidean distance (w/ norm) and take mean over all dipoles
-    point_spread = np.mean(np.linalg.norm(point_distance, axis=-1), axis=-1)
-
-    return accuracy, point_spread
 
 if __name__ == "__main__":
 
@@ -279,6 +134,9 @@ if __name__ == "__main__":
     rho = 0.05
     lam = 1.
 
+    save_network = True
+    fpath_save = op.join('model_subj_{}_iters.meta'.format(n_iter))
+
     # Get subject info and create data
     subj, fwd, inv, cov, evoked_info = load_subject_objects(megdir, subj,
                                                             struct)
@@ -299,7 +157,6 @@ if __name__ == "__main__":
 
     sensor_dim = evoked.data.shape[0]
     source_dim = n_verts
-
     yhat, h1, h2, x_sensor = make_tanh_network(sensor_dim, source_dim)
     sparse_cost, y_source, tf_rho, tf_lam = sparse_objective(sensor_dim,
                                                              source_dim, yhat,
@@ -307,6 +164,7 @@ if __name__ == "__main__":
 
     train_step = tf.train.AdamOptimizer(1e-4).minimize(sparse_cost)
 
+    saver = tf.train.Saver()
     sess.run(tf.initialize_all_variables())
     print("\nSim params\n----------\nn_iter: {}\nn_data_points: {}\nSNR: \
           {}\nbatch_size: {}\n".format(n_iter, n_data_times, str(noise_snr),
@@ -317,6 +175,7 @@ if __name__ == "__main__":
         x_sens_batch, y_src_batch = get_data_batch(x_sens_all, y_src_all, ii,
                                                    batch_size)
 
+        # Take training step
         feed_dict = {x_sensor: x_sens_batch, y_source: y_src_batch,
                      tf_rho: rho, tf_lam: lam}
         _, obj = sess.run([train_step, sparse_cost], feed_dict)
@@ -324,36 +183,5 @@ if __name__ == "__main__":
         if ii % 10 == 0:
             print("\titer: %d, cost: %.2f" % (ii, obj))
 
-    #
-    # Evaluate network
-    #
-    n_eval_data_times = 1000  # Probably should be <= 1000 to avoid mem problems
-
-    print("\nEvaluating...\n")
-
-    # Simulate identity activations
-    rand_verts = np.sort(np.random.randint(0, n_verts, n_eval_data_times))
-    sim_vert_eval_data = np.eye(n_verts)[:, rand_verts] * 0.1
-    evoked_eval, stc_eval = gen_evoked_subject(sim_vert_eval_data, fwd, cov,
-                                               evoked_info, dt, noise_snr)
-
-    x_sens_eval = np.ascontiguousarray(evoked_eval.data.T)
-    y_src_eval = np.ascontiguousarray(stc_eval.data.T)
-
-    feed_dict = {x_sensor: x_sens_eval, y_source: y_src_eval,
-                 tf_rho: rho, tf_lam: lam}
-    src_est = sess.run(yhat, feed_dict)
-
-    # Calculate vector norm error
-    error_norm = eval_error_norm(y_src_eval, src_est)
-
-    dip_positions = get_all_vert_positions(inv['src'])
-
-    # Ground truth pos
-    activation_positions = dip_positions[rand_verts, :]
-    # Get position of most active dipoles
-    largest_dip_positions = get_largest_dip_positions(src_est, 25,
-                                                      dip_positions)
-    # Calculate accuracy metrics (in meters)
-    accuracy, point_spread = get_localization_metrics(activation_positions,
-                                                      largest_dip_positions)
+    if save_network:
+        saver.save(sess, 'model_{}'.format(struct))
