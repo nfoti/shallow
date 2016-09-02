@@ -74,7 +74,7 @@ def gen_evoked_subject(signal, fwd, cov, evoked_info, dt, noise_snr,
     """Function to generate evoked and stc from signal array"""
 
     vertices = [fwd['src'][0]['vertno'], fwd['src'][1]['vertno']]
-    stc = SourceEstimate(sim_vert_data, vertices, tmin=0, tstep=dt)
+    stc = SourceEstimate(signal, vertices, tmin=0, tstep=dt)
 
     evoked = simulate_evoked(fwd, stc, evoked_info, cov, noise_snr,
                              random_state=seed)
@@ -148,6 +148,113 @@ def sparse_objective(sensor_dim, source_dim, yhat, h1, h2, sess):
     return cost, y_source, rho, lam
 
 
+def eval_error_norm(src_data_orig, src_data_est):
+    """Function to compute norm of the error vector at each dipoe
+
+    Parameters
+    ----------
+
+    src_data_orig: numpy matrix size (n_samples x n_src)
+        Ground truth source estimate used to generate sensor data
+
+    src_data_est: numpy matrix (n_samples x n_src)
+        Source estimate of sensor data created using src_data_orig
+
+    Returns
+    -------
+    error_norm: np.array size(n_samples)
+        Norm of vector between true activation and estimated activation
+
+    """
+
+    #TODO: might want to normalize by number of vertices since subject source
+    #      spaces can have different number of dipoles
+
+    error_norm = np.zeros((src_data_orig.shape[0]))
+
+    for ri, (row_orig, row_est) in enumerate(zip(src_data_orig, src_data_est)):
+        error_norm[ri] = np.linalg.norm(row_orig - row_est)
+
+    return error_norm
+
+
+def get_all_vert_positions(src):
+    """Function to get 3-space position of used dipoles
+
+    Parameters
+    ----------
+    src: SourceSpaces
+        Source space object for subject. Needed to get dipole positions
+
+    Returns
+    -------
+    dip_pos: np.array shape(n_src x 3)
+        3-space positions of used dipoles
+    """
+    # Get vertex numbers and positions that are in use
+    # (usually ~4k - 5k out of ~150k)
+    left_vertno = src[0]['vertno']
+    right_vertno = src[1]['vertno']
+
+    vertnos = np.concatenate((left_vertno, right_vertno))
+    dip_pos = np.concatenate((src[0]['rr'][left_vertno, :],
+                              src[1]['rr'][right_vertno, :]))
+
+    return dip_pos
+
+
+def get_largest_dip_positions(data, n_verts, dip_pos):
+    """Function to get spatial centroid of highest activated dipoles
+
+    Parameters
+    ----------
+    data: np.array shape(n_times x n_src)
+        Source estimate data
+    n_verts: int
+        Number of vertices to use when computing maximum activation centroid
+    dip_pos: np.array shape(n_src x 3)
+        3-space positions of all dipoles in source space .
+
+    Returns
+    -------
+    avg_pos: np.array shape(n_times x 3)
+        Euclidean centroid of activation for largest `n_verts` activations
+    """
+
+    #TODO: How to handle negative current vals? Use abs?
+
+    # Initialize
+    largest_dip_pos = np.zeros((data.shape[0], n_verts, 3))
+
+    # Find largest `n_verts` dipoles at each time point and get position
+    for ti in range(data.shape[0]):
+        largest_dip_inds = data[ti, :].argsort()[-n_verts:]
+        largest_dip_pos[ti, :, :] = dip_pos[largest_dip_inds, :]
+
+    return largest_dip_pos
+
+
+def get_localization_metrics(true_pos, largest_dip_pos):
+    """Helper to get accuracy and point spread
+
+    Parameters
+    ----------
+    true_pos: np.array shape(n_times, 3)
+        3D position of dipole that was simulated active
+    largest_dip_pos: np.array shape(n_times, n_dipoles, 3)
+        3D positions of top `n_dipoles` dipoles with highest activation"""
+
+    centroids = np.mean(largest_dip_pos, axis=1)
+    accuracy = np.linalg.norm(true_pos - centroids)
+
+    # Calculate difference in x/y/z positions from true activation to each src
+    point_distance = np.subtract(largest_dip_pos, true_pos[:, np.newaxis, :])
+
+    # Calculate Euclidean distance (w/ norm) and take mean over all dipoles
+    point_spread = np.mean(np.linalg.norm(point_distance, axis=-1), axis=-1)
+
+    return accuracy, point_spread
+
 if __name__ == "__main__":
 
     from docopt import docopt
@@ -163,12 +270,12 @@ if __name__ == "__main__":
         subj = subjects[structurals.index(struct)]
 
     # Set params
-    n_data_times = 2000
+    n_data_times = 50000
     dt = 0.001
     noise_snr = np.inf
     batch_size = 1000
 
-    n_iter = int(1e4)
+    n_iter = int(100000)
     rho = 0.05
     lam = 1.
 
@@ -201,7 +308,7 @@ if __name__ == "__main__":
     train_step = tf.train.AdamOptimizer(1e-4).minimize(sparse_cost)
 
     sess.run(tf.initialize_all_variables())
-    print("\nSim params\nn_iter: {}\nn_data_points: {}\nSNR: \
+    print("\nSim params\n----------\nn_iter: {}\nn_data_points: {}\nSNR: \
           {}\nbatch_size: {}\n".format(n_iter, n_data_times, str(noise_snr),
                                        batch_size))
     print("Optimizing...")
@@ -217,4 +324,36 @@ if __name__ == "__main__":
         if ii % 10 == 0:
             print("\titer: %d, cost: %.2f" % (ii, obj))
 
-    # Evaluate net
+    #
+    # Evaluate network
+    #
+    n_eval_data_times = 1000  # Probably should be <= 1000 to avoid mem problems
+
+    print("\nEvaluating...\n")
+
+    # Simulate identity activations
+    rand_verts = np.sort(np.random.randint(0, n_verts, n_eval_data_times))
+    sim_vert_eval_data = np.eye(n_verts)[:, rand_verts] * 0.1
+    evoked_eval, stc_eval = gen_evoked_subject(sim_vert_eval_data, fwd, cov,
+                                               evoked_info, dt, noise_snr)
+
+    x_sens_eval = np.ascontiguousarray(evoked_eval.data.T)
+    y_src_eval = np.ascontiguousarray(stc_eval.data.T)
+
+    feed_dict = {x_sensor: x_sens_eval, y_source: y_src_eval,
+                 tf_rho: rho, tf_lam: lam}
+    src_est = sess.run(yhat, feed_dict)
+
+    # Calculate vector norm error
+    error_norm = eval_error_norm(y_src_eval, src_est)
+
+    dip_positions = get_all_vert_positions(inv['src'])
+
+    # Ground truth pos
+    activation_positions = dip_positions[rand_verts, :]
+    # Get position of most active dipoles
+    largest_dip_positions = get_largest_dip_positions(src_est, 25,
+                                                      dip_positions)
+    # Calculate accuracy metrics (in meters)
+    accuracy, point_spread = get_localization_metrics(activation_positions,
+                                                      largest_dip_positions)
