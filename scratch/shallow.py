@@ -83,6 +83,11 @@ def make_tanh_network(sensor_dim, source_dim):
     b3 = bias_variable([source_dim], name='b3')
     yhat = tf.nn.tanh(tf.matmul(h2, W3) + b3)
 
+    # Attach histogram summaries to weight functions
+    tf.histogram_summary('W1 Hist', W1)
+    tf.histogram_summary('W2 Hist', W2)
+    tf.histogram_summary('W3 Hist', W3)
+
     return yhat, h1, h2, x_sensor
 
 
@@ -108,6 +113,10 @@ def sparse_objective(sensor_dim, source_dim, yhat, h1, h2, sess):
 
     cost = error + lam * regularizer
 
+    # Attach summaries
+    tf.scalar_summary('error', error)
+    tf.scalar_summary('cost function', cost)
+
     return cost, y_source, rho, lam
 
 if __name__ == "__main__":
@@ -130,7 +139,7 @@ if __name__ == "__main__":
     noise_snr = np.inf
     batch_size = 1000
 
-    n_iter = int(100000)
+    n_iter = int(500000)
     rho = 0.05
     lam = 1.
 
@@ -161,6 +170,8 @@ if __name__ == "__main__":
     sparse_cost, y_source, tf_rho, tf_lam = sparse_objective(sensor_dim,
                                                              source_dim, yhat,
                                                              h1, h2, sess)
+    merged_summaries = tf.merge_all_summaries()
+    train_writer = tf.train.SummaryWriter('./train_summaries', sess.graph)
 
     train_step = tf.train.AdamOptimizer(1e-4).minimize(sparse_cost)
 
@@ -178,10 +189,14 @@ if __name__ == "__main__":
         # Take training step
         feed_dict = {x_sensor: x_sens_batch, y_source: y_src_batch,
                      tf_rho: rho, tf_lam: lam}
-        _, obj = sess.run([train_step, sparse_cost], feed_dict)
 
         if ii % 10 == 0:
+            _, obj, summary = sess.run([train_step, sparse_cost,
+                                        merged_summaries], feed_dict)
+            train_writer.add_summary(summary, ii)
             print("\titer: %d, cost: %.2f" % (ii, obj))
+        else:
+            _, obj = sess.run([train_step, sparse_cost], feed_dict)
 
     if save_network:
         saver.save(sess, 'model_{}'.format(struct))
