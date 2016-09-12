@@ -19,7 +19,9 @@ import os
 import os.path as op
 
 import mne
+from mne import SourceEstimate
 from mne.simulation import simulate_sparse_stc, simulate_stc, simulate_evoked
+from mne.minimum_norm import apply_inverse
 
 import tensorflow as tf
 import numpy as np
@@ -62,11 +64,12 @@ if __name__ == "__main__":
         subj = subjects[structurals.index(struct)]
 
     # Set params
-    n_data_times = 1000
     dt = 0.001
     noise_snr = np.inf
     rho = 0.05
     lam = 1.
+    n_avg_verts = 25  # Number of verts to avg when determining est position
+    n_eval_data_times = 1000  # Probably should be <= 1000 to avoid mem problems
 
     sess = tf.Session()
 
@@ -80,6 +83,7 @@ if __name__ == "__main__":
     # Get subject info and create data
     subj, fwd, inv, cov, evoked_info = load_subject_objects(megdir, subj,
                                                             struct)
+    vert_list = [fwd['src'][0]['vertno'], fwd['src'][1]['vertno']]
     n_verts = fwd['src'][0]['nuse'] + fwd['src'][1]['nuse']
 
     # Simulate identity activations
@@ -100,61 +104,59 @@ if __name__ == "__main__":
     saver.restore(sess, 'model_AKCLEE_107')
 
     #
-    # Evaluate network
+    # Evaluate deep learning network
     #
-    x_sens = np.ascontiguousarray(evoked.data.T)
-    y_src = np.ascontiguousarray(stc.data.T)
 
-    feed_dict = {x_sensor: x_sens, y_source: y_src, tf_rho: rho, tf_lam: lam}
-    src_est = sess.run(yhat, feed_dict)
+    print("\nEvaluating deep learning approach...\n")
 
-    # Calculate vector norm error
-    error_norm = eval_error_norm(y_src, src_est)
-    dip_positions = get_all_vert_positions(inv['src'])
-
-    # Ground truth pos
-    #activation_positions = dip_positions[rand_verts, :]
-    activation_positions = dip_positions[:500, :]
-    # Get position of most active dipoles
-    largest_dip_positions = get_largest_dip_positions(src_est, 25,
-                                                      dip_positions)
-    # Calculate accuracy metrics (in meters)
-    accuracy, point_spread = get_localization_metrics(activation_positions,
-                                                      largest_dip_positions)
-    print('Accuracy: {}, Avg. Point spread: {}'.format(accuracy,
-                                                       np.mean(point_spread)))
-
-    n_eval_data_times = 1000  # Probably should be <= 1000 to avoid mem problems
-
-    print("\nEvaluating...\n")
-
-    # Simulate identity activations
+    # Simulate unit dipole activations
     #rand_verts = np.sort(np.random.randint(0, n_verts, n_eval_data_times))
     #sim_vert_eval_data = np.eye(n_verts)[:, rand_verts] * 0.1
-    sim_vert_eval_data = np.eye(n_verts)[:, :500] * 0.1
-    evoked_eval, stc_eval = gen_evoked_subject(sim_vert_eval_data, fwd, cov,
-                                               evoked_info, dt, noise_snr)
+    sim_vert_data = np.eye(n_verts)[:, :n_eval_data_times]
+    evoked, stc = gen_evoked_subject(sim_vert_data, fwd, cov, evoked_info, dt,
+                                     noise_snr)
 
-    x_sens_eval = np.ascontiguousarray(evoked_eval.data.T)
-    y_src_eval = np.ascontiguousarray(stc_eval.data.T)
+    x_sens = np.ascontiguousarray(evoked.data.T)
+    y_src = np.ascontiguousarray(stc.data.T)
+    #TODO: normalize data? Transfer normalization multipliers? (maybe with sklearn)
 
-    feed_dict = {x_sensor: x_sens_eval, y_source: y_src_eval,
-                 tf_rho: rho, tf_lam: lam}
-    src_est = sess.run(yhat, feed_dict)
+    # Ground truth dipole positions
+    vert_positions = get_all_vert_positions(inv['src'])
+    true_act_positions = vert_positions[:n_eval_data_times, :]
+
+    feed_dict = {x_sensor: x_sens, y_source: y_src, tf_rho: rho, tf_lam: lam}
+    src_est_dl = sess.run(yhat, feed_dict)
+    stc_dl = SourceEstimate(src_est_dl.T, vertices=vert_list, subject=struct,
+                            tmin=0, tstep=0.001)
 
     # Calculate vector norm error
-    error_norm = eval_error_norm(y_src_eval, src_est)
+    error_norm_dl = eval_error_norm(y_src, src_est_dl)
 
-    dip_positions = get_all_vert_positions(inv['src'])
+    # Get position of most active dipoles and calc accuracy metrics (in meters)
+    est_act_positions = get_largest_dip_positions(src_est_dl, n_avg_verts,
+                                                  vert_positions)
+    accuracy_dl, point_spread_dl = get_localization_metrics(true_act_positions,
+                                                            est_act_positions)
 
-    # Ground truth pos
-    activation_positions = dip_positions[:500, :]
-    # Get position of most active dipoles
-    largest_dip_positions = get_largest_dip_positions(src_est, 25,
-                                                      dip_positions)
-    # Calculate accuracy metrics (in meters)
-    accuracy, point_spread = get_localization_metrics(activation_positions,
-                                                      largest_dip_positions)
-    print('Accuracy: {}, Avg. Point spread: {}'.format(accuracy,
-                                                       np.mean(point_spread)))
+    print("\nEvaluating deep learning approach...\n")
+    #
+    # Evaluate standard MNE methods
+    #
+    stc_mne = apply_inverse(evoked, inv, method='sLORETA')
+    src_est_mne = stc_mne.data.T
 
+    # Calculate vector norm error
+    error_norm_mne = eval_error_norm(y_src, src_est_mne)
+    est_act_positions = get_largest_dip_positions(src_est_mne, n_avg_verts,
+                                                  vert_positions)
+    accuracy_mne, point_spread_mne = get_localization_metrics(true_act_positions,
+                                                              est_act_positions)
+
+    print('\bDeep learning; error norm average for {} verts: {:0.4f}'.format(
+        n_eval_data_times, np.mean(error_norm_dl)))
+    print('Linear method: error norm average for {} verts: {:0.4f}\n'.format(
+        n_eval_data_times, np.mean(error_norm_mne)))
+    print('Deep learning; Accuracy: {:0.5f}, Avg. Point spread: {:0.5f}'.format(
+        accuracy_dl, np.mean(point_spread_dl)))
+    print('Linear method; Accuracy: {:0.5f}, Avg. Point spread: {:0.5f}\n'.format(
+        accuracy_mne, np.mean(point_spread_mne)))
