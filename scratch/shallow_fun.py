@@ -18,24 +18,25 @@ from mne.minimum_norm import read_inverse_operator
 from mne.simulation import simulate_sparse_stc, simulate_stc, simulate_evoked
 
 
-def load_subject_objects(megdatadir, subj, struct):
+def load_subject_objects(megdatadir, subj, struct, verbose=False):
 
     print("  %s: -- loading meg objects" % subj)
 
     fname_fwd = op.join(megdatadir, subj, 'forward',
                         '%s-sss-fwd.fif' % subj)
-    fwd = mne.read_forward_solution(fname_fwd, force_fixed=True, surf_ori=True)
+    fwd = mne.read_forward_solution(fname_fwd, force_fixed=True, surf_ori=True,
+                                    verbose=verbose)
 
     fname_inv = op.join(megdatadir, subj, 'inverse',
                         '%s-55-sss-meg-eeg-fixed-inv.fif' % subj)
-    inv = read_inverse_operator(fname_inv)
+    inv = read_inverse_operator(fname_inv, verbose=verbose)
 
     fname_epochs = op.join(megdatadir, subj, 'epochs',
                            'All_55-sss_%s-epo.fif' % subj)
     #epochs = mne.read_epochs(fname_epochs)
     #evoked = epochs.average()
     #evoked_info = evoked.info
-    evoked_info = mne.io.read_info(fname_epochs)
+    evoked_info = mne.io.read_info(fname_epochs, verbose=verbose)
     cov = inv['noise_cov']
 
     print("  %s: -- finished loading meg objects" % subj)
@@ -55,6 +56,16 @@ def gen_evoked_subject(signal, fwd, cov, evoked_info, dt, noise_snr,
     evoked.add_eeg_average_proj()
 
     return evoked, stc
+
+
+def norm_transpose(data):
+    """Helper to transpose data and normalize by max val"""
+    #XXX Probably should switch to sklearn's standard scaler
+        # (0 mean, unit var, and saves the scaling if we need to apply it later)
+    data_fixed = np.ascontiguousarray(data.T)
+    data_fixed /= np.max(np.abs(data_fixed))
+
+    return data_fixed
 
 
 def get_data_batch(x_data, y_label, batch_num, batch_size):
@@ -161,7 +172,15 @@ def get_localization_metrics(true_pos, largest_dip_pos):
     true_pos: np.array shape(n_times, 3)
         3D position of dipole that was simulated active
     largest_dip_pos: np.array shape(n_times, n_dipoles, 3)
-        3D positions of top `n_dipoles` dipoles with highest activation"""
+        3D positions of top `n_dipoles` dipoles with highest activation
+
+    Returns
+    -------
+    accuracy: np.array
+
+    point_spread: float
+
+    """
 
     centroids = np.mean(largest_dip_pos, axis=1)
     accuracy = np.linalg.norm(true_pos - centroids)
