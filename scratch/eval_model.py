@@ -28,7 +28,8 @@ import numpy as np
 
 from shallow_fun import (load_subject_objects, gen_evoked_subject,
                          get_all_vert_positions, get_largest_dip_positions,
-                         get_localization_metrics, eval_error_norm)
+                         get_localization_metrics, eval_error_norm,
+                         norm_transpose)
 from shallow import make_tanh_network, sparse_objective
 
 
@@ -69,16 +70,9 @@ if __name__ == "__main__":
     rho = 0.05
     lam = 1.
     n_avg_verts = 25  # Number of verts to avg when determining est position
-    n_eval_data_times = 1000  # Probably should be <= 1000 to avoid mem problems
+    n_test_verts = 1000  # Probably should be <= 1000 to avoid mem problems
 
     sess = tf.Session()
-
-    #saver = tf.train.import_meta_graph('model_AKCLEE_107.meta')
-    #saver.restore(sess, model_fname.split('.')[:-1])
-    #yhat = tf.get_collection(['yhat'][0])
-
-    print('\nLoaded saved model: %s\n' % model_fname)
-    print("\nEvaluating...\n")
 
     # Get subject info and create data
     subj, fwd, inv, cov, evoked_info = load_subject_objects(megdir, subj,
@@ -86,51 +80,42 @@ if __name__ == "__main__":
     vert_list = [fwd['src'][0]['vertno'], fwd['src'][1]['vertno']]
     n_verts = fwd['src'][0]['nuse'] + fwd['src'][1]['nuse']
 
-    # Simulate identity activations
-    sim_vert_data = np.eye(n_verts)[:, :500] * 0.1
-    evoked, stc = gen_evoked_subject(sim_vert_data, fwd, cov, evoked_info, dt,
-                                     noise_snr)
-
     print("Simulating and normalizing data")
-    sens_dim = evoked.data.shape[0]
-    src_dim = n_verts
+    sensor_dim = len(fwd['info']['ch_names'])
+    source_dim = fwd['src'][0]['nuse'] + fwd['src'][1]['nuse']
 
+    print("Reconstructing model and restoring saved weights")
     # Reconstruct network
-    yhat, h1, h2, x_sensor = make_tanh_network(sens_dim, src_dim)
-    sparse_cost, y_source, tf_rho, tf_lam = sparse_objective(sens_dim, src_dim,
-                                                             yhat, h1, h2,
+    yhat, h_list, x_sensor = make_tanh_network(sensor_dim, source_dim)
+    sparse_cost, y_source, tf_rho, tf_lam = sparse_objective(sensor_dim, source_dim,
+                                                             yhat, h_list,
                                                              sess)
     saver = tf.train.Saver()
     saver.restore(sess, 'model_AKCLEE_107')
 
-    #
-    # Evaluate deep learning network
-    #
-
     print("\nEvaluating deep learning approach...\n")
 
     # Simulate unit dipole activations
-    #rand_verts = np.sort(np.random.randint(0, n_verts, n_eval_data_times))
-    #sim_vert_eval_data = np.eye(n_verts)[:, rand_verts] * 0.1
-    sim_vert_data = np.eye(n_verts)[:, :n_eval_data_times]
+    rand_verts = np.sort(np.random.randint(0, n_verts, n_test_verts))
+    sim_vert_data = np.eye(n_verts)[:, rand_verts]
     evoked, stc = gen_evoked_subject(sim_vert_data, fwd, cov, evoked_info, dt,
                                      noise_snr)
 
-    x_sens = np.ascontiguousarray(evoked.data.T)
-    y_src = np.ascontiguousarray(stc.data.T)
     #TODO: normalize data? Transfer normalization multipliers? (maybe with sklearn)
+    x_test = norm_transpose(evoked.data)
+    y_test = norm_transpose(stc.data)
 
     # Ground truth dipole positions
     vert_positions = get_all_vert_positions(inv['src'])
-    true_act_positions = vert_positions[:n_eval_data_times, :]
+    true_act_positions = vert_positions[rand_verts, :]
 
-    feed_dict = {x_sensor: x_sens, y_source: y_src, tf_rho: rho, tf_lam: lam}
+    feed_dict = {x_sensor: x_test, y_source: y_test, tf_rho: rho, tf_lam: lam}
     src_est_dl = sess.run(yhat, feed_dict)
     stc_dl = SourceEstimate(src_est_dl.T, vertices=vert_list, subject=struct,
                             tmin=0, tstep=0.001)
 
     # Calculate vector norm error
-    error_norm_dl = eval_error_norm(y_src, src_est_dl)
+    error_norm_dl = eval_error_norm(y_test, src_est_dl)
 
     # Get position of most active dipoles and calc accuracy metrics (in meters)
     est_act_positions = get_largest_dip_positions(src_est_dl, n_avg_verts,
@@ -138,7 +123,7 @@ if __name__ == "__main__":
     accuracy_dl, point_spread_dl = get_localization_metrics(true_act_positions,
                                                             est_act_positions)
 
-    print("\nEvaluating deep learning approach...\n")
+    print("\nEvaluating standard linear approach...\n")
     #
     # Evaluate standard MNE methods
     #
@@ -146,16 +131,18 @@ if __name__ == "__main__":
     src_est_mne = stc_mne.data.T
 
     # Calculate vector norm error
-    error_norm_mne = eval_error_norm(y_src, src_est_mne)
+    error_norm_mne = eval_error_norm(y_test, src_est_mne)
     est_act_positions = get_largest_dip_positions(src_est_mne, n_avg_verts,
                                                   vert_positions)
     accuracy_mne, point_spread_mne = get_localization_metrics(true_act_positions,
                                                               est_act_positions)
 
+    '''
     print('\bDeep learning; error norm average for {} verts: {:0.4f}'.format(
-        n_eval_data_times, np.mean(error_norm_dl)))
+        n_test_verts, np.mean(error_norm_dl)))
     print('Linear method: error norm average for {} verts: {:0.4f}\n'.format(
-        n_eval_data_times, np.mean(error_norm_mne)))
+        n_test_verts, np.mean(error_norm_mne)))
+        '''
     print('Deep learning; Accuracy: {:0.5f}, Avg. Point spread: {:0.5f}'.format(
         accuracy_dl, np.mean(point_spread_dl)))
     print('Linear method; Accuracy: {:0.5f}, Avg. Point spread: {:0.5f}\n'.format(
