@@ -72,19 +72,19 @@ def make_tanh_network(sensor_dim, source_dim):
     x_sensor = tf.placeholder(tf.float32, shape=[None, sensor_dim],
                               name="x_sensor")
 
-    W1 = weight_variable([sensor_dim, source_dim // 2], name='W1')
-    b1 = bias_variable([source_dim // 2], name='b1')
+    W1 = weight_variable([sensor_dim, source_dim // 4], name='W1')
+    b1 = bias_variable([source_dim // 4], name='b1')
     h1 = tf.nn.tanh(tf.matmul(x_sensor, W1) + b1)
 
-    W2 = weight_variable([source_dim // 2, source_dim // 2], name='W2')
+    W2 = weight_variable([source_dim // 4, source_dim // 2], name='W2')
     b2 = bias_variable([source_dim // 2], name='b2')
     h2 = tf.nn.tanh(tf.matmul(h1, W2) + b2)
 
-    W3 = weight_variable([source_dim // 2, source_dim // 4], name='W3')
-    b3 = bias_variable([source_dim // 4], name='b3')
+    W3 = weight_variable([source_dim // 2, source_dim // 2], name='W3')
+    b3 = bias_variable([source_dim // 2], name='b3')
     h3 = tf.nn.tanh(tf.matmul(h2, W3) + b3)
 
-    W4 = weight_variable([source_dim // 4, source_dim], name='W4')
+    W4 = weight_variable([source_dim // 2, source_dim], name='W4')
     b4 = bias_variable([source_dim], name='b4')
     yhat = tf.nn.tanh(tf.matmul(h3, W4) + b4)
 
@@ -99,9 +99,11 @@ def make_tanh_network(sensor_dim, source_dim):
     return yhat, h_list, x_sensor
 
 
-def bernoulli(a_obj, rho):
-    return (rho * (tf.log(rho) - tf.log(a_obj + 1e-6) + (1 - rho) *
-                   (tf.log(1 - rho) - tf.log(1 - a_obj + 1e-6))))
+def bernoulli(act, rho):
+    """Helper to calculate sparsity penalty based on KL divergence"""
+
+    return (rho * (tf.log(rho) - tf.log(act + 1e-6)) +
+            (1 - rho) * (tf.log(1 - rho) - tf.log(1 - act + 1e-6)))
 
 
 def sparse_objective(sensor_dim, source_dim, yhat, h_list, sess):
@@ -114,9 +116,9 @@ def sparse_objective(sensor_dim, source_dim, yhat, h_list, sess):
     error = tf.reduce_sum(tf.squared_difference(y_source, yhat))
 
     # Remap activations to [0,1]
-    a_list = [0.5 * h_obj + 0.5 for h_obj in h_list]
+    act_list = [0.5 * h_obj + 0.5 for h_obj in h_list]
 
-    kl_bernoulli_list = [bernoulli(a_obj, rho) for a_obj in a_list]
+    kl_bernoulli_list = [bernoulli(act, rho) for act in act_list]
 
     regularizer = sum([tf.reduce_sum(kl_bernoulli_h)
                        for kl_bernoulli_h in kl_bernoulli_list])
@@ -144,16 +146,16 @@ if __name__ == "__main__":
         subj = subjects[structurals.index(struct)]
 
     # Set params
-    n_training_times_noise = 10000
-    n_training_times_sparse = 10000
+    n_training_times_noise = 25000
+    n_training_times_sparse = 25000
     n_training_times = n_training_times_noise + n_training_times_sparse
 
     dt = 0.001
     SNR = np.inf
-    batch_size = 500
+    batch_size = 1000
 
-    n_iter = int(5000)
-    rho = 0.05
+    n_iter = int(100000)
+    rho = 0.1
     lam = 1.
 
     save_network = True
