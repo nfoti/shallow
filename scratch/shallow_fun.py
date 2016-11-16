@@ -68,11 +68,11 @@ def norm_transpose(data):
     return data_fixed
 
 
-def get_data_batch(x_data, y_label, batch_num, batch_size):
+def get_data_batch(x_data, y_label, batch_size, seed=None):
     """Function to get a random sampling of an evoked and stc pair"""
 
     # Get random sampling of data, seed by batch num
-    np.random.seed(batch_num)
+    np.random.seed(seed)
     rand_inds = np.random.randint(x_data.shape[0], size=batch_size)
 
     return x_data[rand_inds, :], y_label[rand_inds, :]
@@ -104,7 +104,7 @@ def get_all_vert_positions(src):
 
 
 def eval_error_norm(src_data_orig, src_data_est):
-    """Function to compute norm of the error vector at each dipoe
+    """Function to compute norm of the error vector at each dipole
 
     Parameters
     ----------
