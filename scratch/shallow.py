@@ -201,11 +201,15 @@ if __name__ == "__main__":
             _, obj, summary = sess.run([train_step, sparse_cost,
                                         merged_summaries], feed_dict)
             train_writer.add_summary(summary, ii)
-            print("\titer: %d, cost: %.2f" % (ii, obj))
+            print("\titer: %04i, cost: %.2f" % (ii, obj))
         else:
             _, obj = sess.run([train_step, sparse_cost], feed_dict)
 
-    sess.close()
-
     if save_network:
-        saver.save(sess, 'model_{}'.format(struct))
+        save_fold = 'saved_models'
+        if not os.path.isdir(save_fold):
+            os.mkdir(save_fold)
+
+        saver.save(sess, save_fold + '/model_{}'.format(struct))
+
+    sess.close()

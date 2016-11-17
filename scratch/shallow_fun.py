@@ -53,7 +53,7 @@ def gen_evoked_subject(signal, fwd, cov, evoked_info, dt, noise_snr,
 
     evoked = simulate_evoked(fwd, stc, evoked_info, cov, noise_snr,
                              random_state=seed)
-    evoked.add_eeg_average_proj()
+    evoked.set_eeg_reference()
 
     return evoked, stc
 

@@ -33,10 +33,10 @@ common_params = dict(dt=0.001,
 training_params = dict(n_training_times_noise=1000,  # Number of noise data samples
                        n_training_times_sparse=0,  # Number of sparse data samples
                        batch_size=100,
-                       n_training_iters=int(1e4),  # Number of training iterations
+                       n_training_iters=int(1e3),  # Number of training iterations
                        opt_lr=1e-4)  # Learning rate for optimizer
 
 # Model evaluation params
 eval_params = dict(n_avg_verts=25,  # Number of verts to avg when determining est position
                    n_test_verts=1000,  # Probably should be <= 1000 to avoid mem problems
-                   linear_inv='MNE')  #sLORETA or MNE
+                   linear_inv='MNE')  # sLORETA or MNE
