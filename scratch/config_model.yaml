@@ -1,0 +1,26 @@
+# model_config.yaml
+# @author: wronk
+# Specify the neural network architectures
+
+arch: 
+    - [1000, 100, 8134]
+    - [100, 1000, 8134]
+    - [1000, 1000, 8134]
+
+activation: 
+    - 'relu'
+
+dropout:
+    - 0.0
+
+optimizer:
+    - 'adam'
+
+loss:
+    - 'mse'
+
+metrics: 
+    ['mse']
+
+n_epochs:
+    - 1000000
