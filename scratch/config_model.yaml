@@ -3,9 +3,10 @@
 # Specify the neural network architectures
 
 arch: 
-    - [1000, 100, 8134]
-    - [100, 1000, 8134]
-    - [1000, 1000, 8134]
+    - [1000, 1000, 'None']
+    - [1000, 4000, 'None']
+    - [4000, 1000, 'None']
+    - [4000, 4000, 'None']
 
 activation: 
     - 'relu'
@@ -23,4 +24,4 @@ metrics:
     ['mse']
 
 n_epochs:
-    - 1000000
+    - 10000
