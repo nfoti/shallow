@@ -32,7 +32,7 @@ def load_model_specs(fname_yaml_conf):
     return model_spec_list
 
 
-def construct_model(model_spec, input_dim):
+def construct_model(model_spec, input_dim, output_dim):
     """
     Helper to construct a Keras model based on dict of specs and input size
 
@@ -42,6 +42,8 @@ def construct_model(model_spec, input_dim):
         Dict containing keys: arch, activation, dropout, optimizer, loss,
             metrics
     input_dim: int
+        Size of input dimension
+    output_dim: int
         Size of input dimension
 
     Returns
@@ -53,11 +55,18 @@ def construct_model(model_spec, input_dim):
     model = Sequential()
 
     for li, layer_size in enumerate(model_spec['arch']):
+        # Set output size for last layer
+        if layer_size == 'None':
+            layer_size = output_dim
+
+        # For input layer, add input dimension
         if li == 0:
             model.add(Dense(layer_size, input_dim=input_dim,
-                            activation=model_spec['activation']))
+                            activation=model_spec['activation'],
+                            name='Input'))
         else:
-            model.add(Dense(layer_size, activation=model_spec['activation']))
+            model.add(Dense(layer_size, activation=model_spec['activation'],
+                            name='Layer_%i' % li))
 
         if model_spec['dropout'] > 0.:
             model.add(Dropout(model_spec['dropout']))
