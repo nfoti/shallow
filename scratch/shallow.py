@@ -8,7 +8,7 @@
       shallow.py (-h | --help)
 
     Options:
-      --subj=<subj>     Specify subject to process with structural name
+      --subj=<subj>     Specify single subject to process with structural name
       -h, --help        Show this screen
 """
 from __future__ import absolute_import
@@ -18,6 +18,11 @@ from __future__ import print_function
 import os
 import os.path as op
 import numpy as np
+from time import strftime
+from shutil import copy2
+
+from keras.callbacks import BaseLogger, TensorBoard, ModelCheckpoint
+from keras.utils.visualize_util import plot as keras_plot
 
 import mne
 from mne import SourceEstimate
@@ -29,10 +34,11 @@ import config_exp
 from config_exp import training_params as TP
 from shallow_fun import construct_model, load_model_specs, norm_transpose
 
+shallow_dir = os.environ['SHALLOW_DIR']
 
 # Removing eric_sps_32/AKCL_132 b/c of vertex issue
-structurals = config_exp.structurals[:-1]
-subjects = config_exp.subjects[:-1]
+structs = config_exp.structurals[:5]
+subjects = config_exp.subjects[:5]
 
 
 def load_subject_objects(megdatadir, subj, struct):
@@ -57,7 +63,7 @@ def load_subject_objects(megdatadir, subj, struct):
 
     print("  %s: -- finished loading meg objects" % subj)
 
-    return subj, fwd, inv, cov, evoked_info
+    return fwd, inv, cov, evoked_info
 
 
 def gen_evoked_subject(signal, fwd, cov, evoked_info, dt, noise_snr,
@@ -72,6 +78,28 @@ def gen_evoked_subject(signal, fwd, cov, evoked_info, dt, noise_snr,
     evoked.set_eeg_reference()
 
     return evoked, stc
+
+
+def create_exp_save_dir(exp_dir, n_subjects, n_models):
+    """Helper to get/create save director for one experiment"""
+    if not op.isdir(exp_dir):
+        os.mkdir(exp_dir)
+
+    # Create folder to save current experiment
+    fold_name_cur_exp = strftime('%Y_%m_%d__%H_%M_') + \
+        '%i_subj_%i_models' % (n_subjects, n_models)
+    dir_name_cur_exp = op.join(exp_dir, fold_name_cur_exp)
+    os.mkdir(dir_name_cur_exp)
+
+    return dir_name_cur_exp
+
+
+def create_subj_save_dir(exp_save_dir, subj):
+    """Helper to get/create save director for one subject"""
+    dir_name_cur_subj = op.join(exp_save_dir, subj)
+    if not op.isdir(dir_name_cur_subj):
+        os.mkdir(dir_name_cur_subj)
+    return dir_name_cur_subj
 
 
 """
@@ -109,56 +137,73 @@ if __name__ == "__main__":
     megdir = argv['<megdir>']
     structdir = argv['<structdir>']
 
-    struct = None
-    subj = None
     if argv['--subj']:
-        struct = argv['--subj']
-        subj = subjects[structurals.index(struct)]
+        structs = [argv['--subj']]
+        subjects = [subjects[structs.index(structs[0])]]
 
     ############################################
-    # Load subject head models and generate data
+    # Load config info and create save dir
     ############################################
-
-    n_training_times = TP['n_training_times_noise']
-    n_training_iters = TP['n_training_iters']
-
-    # Get subject info and create data
-    subj, fwd, inv, cov, evoked_info = load_subject_objects(megdir, subj,
-                                                            struct)
-    sen_dim = len(fwd['info']['ch_names'])
-    src_dim = fwd['src'][0]['nuse'] + fwd['src'][1]['nuse']
-
-    print("Simulating data")
-    sim_src_act = np.random.randn(src_dim, TP['n_training_times_noise']) * \
-        TP['src_act_scaler']
-    evoked, stc = gen_evoked_subject(sim_src_act, fwd, cov, evoked_info,
-                                     TP['dt'], TP['SNR'])
-
-    # Normalize training data to lie between -1 and 1
-    # XXX: Appropriate to do this? Maybe need to normalize src space only
-    # before generating sens data
-    x_train = norm_transpose(evoked.data)
-    y_train = norm_transpose(sim_src_act)
-
-    x_sens = np.ascontiguousarray(evoked.data.T)
-    x_sens /= np.max(np.abs(x_sens))
-    y_src = np.ascontiguousarray(sim_src_act.T)
-    y_src /= np.max(np.abs(y_src))
-
-    ############################################
-    # Create neural network
-    ############################################
-
-    print("Training...")
-
+    n_training_samps = TP['n_training_samps_noise']
     model_specs = load_model_specs('config_model.yaml')
-    for model_spec in model_specs:
-        model = construct_model(model_spec, sen_dim)
-        model.fit(x_train, y_train,
-                  nb_epoch=model_spec['n_epochs'],
-                  batch_size=TP['batch_size'],
-                  validation_split=TP['valid_proportion'])
+
+    # Create folder for saving current experiment, copy over config files
+    exp_save_dir = create_exp_save_dir(
+        op.join(shallow_dir, config_exp.exp_fold), len(subjects), len(model_specs))
+    copy2('config_exp.py', exp_save_dir)
+    copy2('config_model.yaml', exp_save_dir)
+
+    print('\nSubjects: %s' % str(subjects))
+    print('Models: %s' % str(model_specs))
+    print('Params: %s\n' % str(TP))
 
     ############################################
-    # Evaluate net
+    # Loop over subjects
     ############################################
+    for si, (subj, struct) in enumerate(zip(subjects, structs)):
+        subj_save_dir = create_subj_save_dir(exp_save_dir, struct)
+
+        # Define callbacks
+        callbacks = [BaseLogger(),
+                     ModelCheckpoint(op.join(subj_save_dir, 'saved_model_' + \
+                                             '{epoch:04d}_{val_loss:.3f}.hdf5'),
+                                     save_best_only=True),
+                     TensorBoard(log_dir=subj_save_dir)]
+
+        ############################################
+        # Load subject head models and generate data
+        ############################################
+        fwd, inv, cov, evoked_info = load_subject_objects(megdir, subj, struct)
+        sen_dim = len(fwd['info']['ch_names'])
+        src_dim = fwd['src'][0]['nuse'] + fwd['src'][1]['nuse']
+
+        sim_src_act = np.random.randn(src_dim, TP['n_training_samps_noise']) * \
+            TP['src_act_scaler']
+        evoked, stc = gen_evoked_subject(sim_src_act, fwd, cov, evoked_info,
+                                         TP['dt'], TP['SNR'])
+
+        # Normalize training data to lie between -1 and 1
+        # XXX: Appropriate to do this? Maybe need to normalize src space only
+        # before generating sens data
+        x_train = norm_transpose(evoked.data)
+        y_train = norm_transpose(sim_src_act)
+
+        ############################################
+        # Train neural network
+        ############################################
+
+        for mi, model_spec in enumerate(model_specs):
+            model = construct_model(model_spec, sen_dim, src_dim)
+            print('\n\nLayers: %s' % str([layer.output_dim for layer in model.layers]))
+            model.fit(x_train, y_train,
+                      nb_epoch=model_spec['n_epochs'],
+                      batch_size=TP['batch_size'],
+                      validation_split=TP['valid_proportion'],
+                      callbacks=callbacks)
+            if si is 0:
+                keras_plot(model, show_shapes=True,
+                           to_file=op.join(exp_save_dir, 'model_%i.png' % mi))
+
+        ############################################
+        # Evaluate net
+        ############################################
