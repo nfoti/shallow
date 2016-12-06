@@ -69,7 +69,7 @@ def construct_model(model_spec, input_dim, output_dim):
                             name='Layer_%i' % li))
 
         if model_spec['dropout'] > 0.:
-            model.add(Dropout(model_spec['dropout']))
+            model.add(Dropout(model_spec['dropout'], name='Dropout_%i' % li))
 
     model.compile(optimizer=model_spec['optimizer'],
                   loss=model_spec['loss'],
@@ -79,10 +79,10 @@ def construct_model(model_spec, input_dim, output_dim):
 
 
 def norm_transpose(data):
-    """Helper to transpose data and normalize by max val"""
+    """Helper to transpose data and normalize by max val of each row"""
     #XXX Probably should switch to sklearn's standard scaler
         # (0 mean, unit var, and saves the scaling if we need to apply it later)
     data_fixed = np.ascontiguousarray(data.T)
-    data_fixed /= np.max(np.abs(data_fixed))
+    data_fixed /= np.max(np.abs(data_fixed), axis=0)
 
     return data_fixed
