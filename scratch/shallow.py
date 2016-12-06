@@ -19,8 +19,10 @@ import os
 import os.path as op
 import numpy as np
 from time import strftime
+import pprint
 from shutil import copy2
 
+import keras
 from keras.callbacks import BaseLogger, TensorBoard, ModelCheckpoint
 from keras.utils.visualize_util import plot as keras_plot
 
@@ -37,8 +39,8 @@ from shallow_fun import construct_model, load_model_specs, norm_transpose
 shallow_dir = os.environ['SHALLOW_DIR']
 
 # Removing eric_sps_32/AKCL_132 b/c of vertex issue
-structs = config_exp.structurals[:5]
-subjects = config_exp.subjects[:5]
+structs = config_exp.structurals
+subjects = config_exp.subjects
 
 
 def load_subject_objects(megdatadir, subj, struct):
@@ -47,18 +49,19 @@ def load_subject_objects(megdatadir, subj, struct):
 
     fname_fwd = op.join(megdatadir, subj, 'forward',
                         '%s-sss-fwd.fif' % subj)
-    fwd = mne.read_forward_solution(fname_fwd, force_fixed=True, surf_ori=True)
+    fwd = mne.read_forward_solution(fname_fwd, force_fixed=True, surf_ori=True,
+                                    verbose=False)
 
     fname_inv = op.join(megdatadir, subj, 'inverse',
                         '%s-55-sss-meg-eeg-fixed-inv.fif' % subj)
-    inv = read_inverse_operator(fname_inv)
+    inv = read_inverse_operator(fname_inv, verbose=False)
 
     fname_epochs = op.join(megdatadir, subj, 'epochs',
                            'All_55-sss_%s-epo.fif' % subj)
     #epochs = mne.read_epochs(fname_epochs)
     #evoked = epochs.average()
     #evoked_info = evoked.info
-    evoked_info = mne.io.read_info(fname_epochs)
+    evoked_info = mne.io.read_info(fname_epochs, verbose=False)
     cov = inv['noise_cov']
 
     print("  %s: -- finished loading meg objects" % subj)
@@ -153,9 +156,13 @@ if __name__ == "__main__":
     copy2('config_exp.py', exp_save_dir)
     copy2('config_model.yaml', exp_save_dir)
 
-    print('\nSubjects: %s' % str(subjects))
-    print('Models: %s' % str(model_specs))
-    print('Params: %s\n' % str(TP))
+    pp = pprint.PrettyPrinter(indent=4)
+    print('\nSubjects: (%i)' % len(subjects))
+    pp.pprint(subjects)
+    print('\nModels: (%i)' % len(model_specs))
+    pp.pprint(model_specs)
+    print('\nParams:')
+    pp.pprint(TP)
 
     ############################################
     # Loop over subjects
@@ -194,7 +201,8 @@ if __name__ == "__main__":
 
         for mi, model_spec in enumerate(model_specs):
             model = construct_model(model_spec, sen_dim, src_dim)
-            print('\n\nLayers: %s' % str([layer.output_dim for layer in model.layers]))
+            print('\n\nLayers: %s' % str([layer.output_dim for layer in model.layers
+                                          if type(layer) is keras.layers.core.Dense]))
             model.fit(x_train, y_train,
                       nb_epoch=model_spec['n_epochs'],
                       batch_size=TP['batch_size'],
