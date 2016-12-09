@@ -11,6 +11,8 @@ import numpy as np
 
 from keras.models import Sequential
 from keras.layers import Dense, Activation, Dropout
+from keras.regularizers import WeightRegularizer as weight_reg
+from keras.regularizers import ActivityRegularizer as act_reg
 
 
 def load_model_specs(fname_yaml_conf):
@@ -40,7 +42,7 @@ def construct_model(model_spec, input_dim, output_dim):
     ----------
     model_spec: dict
         Dict containing keys: arch, activation, dropout, optimizer, loss,
-            metrics
+            w_reg, metrics
     input_dim: int
         Size of input dimension
     output_dim: int
@@ -61,11 +63,18 @@ def construct_model(model_spec, input_dim, output_dim):
 
         # For input layer, add input dimension
         if li == 0:
-            model.add(Dense(layer_size, input_dim=input_dim,
+            temp_input_dim = input_dim
+            model.add(Dense(layer_size,
+                            input_dim=input_dim,
                             activation=model_spec['activation'],
+                            W_regularizer=weight_reg(model_spec['w_reg'][0],
+                                                     model_spec['w_reg'][1]),
                             name='Input'))
         else:
-            model.add(Dense(layer_size, activation=model_spec['activation'],
+            model.add(Dense(layer_size,
+                            activation=model_spec['activation'],
+                            W_regularizer=weight_reg(model_spec['w_reg'][0],
+                                                     model_spec['w_reg'][1]),
                             name='Layer_%i' % li))
 
         if model_spec['dropout'] > 0.:
