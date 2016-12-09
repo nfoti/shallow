@@ -21,6 +21,7 @@ import numpy as np
 from time import strftime
 import pprint
 from shutil import copy2
+from copy import deepcopy
 
 import keras
 from keras.callbacks import BaseLogger, TensorBoard, ModelCheckpoint
@@ -39,8 +40,8 @@ from shallow_fun import construct_model, load_model_specs, norm_transpose
 shallow_dir = os.environ['SHALLOW_DIR']
 
 # Removing eric_sps_32/AKCL_132 b/c of vertex issue
-structs = config_exp.structurals
-subjects = config_exp.subjects
+structs = config_exp.structurals[:5]
+subjects = config_exp.subjects[:5]
 
 
 def load_subject_objects(megdatadir, subj, struct):
@@ -184,14 +185,15 @@ if __name__ == "__main__":
         sen_dim = len(fwd['info']['ch_names'])
         src_dim = fwd['src'][0]['nuse'] + fwd['src'][1]['nuse']
 
+        # XXX: Consider moving to a keras `fit_generator` approach so that new
+        # data is generated for each epoch
         sim_src_act = np.random.randn(src_dim, TP['n_training_samps_noise']) * \
             TP['src_act_scaler']
         evoked, stc = gen_evoked_subject(sim_src_act, fwd, cov, evoked_info,
                                          TP['dt'], TP['SNR'])
 
         # Normalize training data to lie between -1 and 1
-        # XXX: Appropriate to do this? Maybe need to normalize src space only
-        # before generating sens data
+        # XXX: Appropriate to do this? See batch normalization papers
         x_train = norm_transpose(evoked.data)
         y_train = norm_transpose(sim_src_act)
 
@@ -201,13 +203,27 @@ if __name__ == "__main__":
 
         for mi, model_spec in enumerate(model_specs):
             model = construct_model(model_spec, sen_dim, src_dim)
-            print('\n\nLayers: %s' % str([layer.output_dim for layer in model.layers
-                                          if type(layer) is keras.layers.core.Dense]))
-            model.fit(x_train, y_train,
-                      nb_epoch=model_spec['n_epochs'],
-                      batch_size=TP['batch_size'],
-                      validation_split=TP['valid_proportion'],
-                      callbacks=callbacks)
+
+            # Print model information
+            print('\nSubj %i/%i Model %i/%i)' % (si + 1, len(subjects),
+                                                 mi + 1, len(model_specs)))
+            temp_spec = deepcopy(model_spec)
+            temp_spec['arch'].insert(0, sen_dim)
+            temp_spec['arch'][-1] = src_dim
+            pp.pprint(temp_spec)
+
+            # Use separate logdir for each model
+            if type(callbacks[2]) is keras.callbacks.TensorBoard:
+                temp_tb_logdir = op.join(subj_save_dir, 'tb_%i' % mi)
+                os.mkdir(temp_tb_logdir)
+                callbacks[2].log_dir = temp_tb_logdir
+
+            history = model.fit(x_train, y_train,
+                                nb_epoch=model_spec['n_epochs'],
+                                batch_size=model_spec['batch_size'],
+                                validation_split=TP['valid_proportion'],
+                                callbacks=callbacks)
+
             if si is 0:
                 keras_plot(model, show_shapes=True,
                            to_file=op.join(exp_save_dir, 'model_%i.png' % mi))
