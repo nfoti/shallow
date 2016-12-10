@@ -75,13 +75,18 @@ def gen_evoked_subject(signal, fwd, cov, evoked_info, dt, noise_snr,
     """Function to generate evoked and stc from signal array"""
 
     vertices = [fwd['src'][0]['vertno'], fwd['src'][1]['vertno']]
-    stc = SourceEstimate(signal, vertices, tmin=0, tstep=dt)
+    stc = SourceEstimate(signal, vertices, tmin=0, tstep=dt, verbose=False)
 
     evoked = simulate_evoked(fwd, stc, evoked_info, cov, noise_snr,
-                             random_state=seed)
+                             random_state=seed, verbose=False)
     evoked.set_eeg_reference()
 
-    return evoked, stc
+    # Normalize training data to lie between -1 and 1
+    # XXX: Appropriate to do this? See batch normalization papers
+    x_train = norm_transpose(evoked.data)
+    y_train = norm_transpose(signal)
+
+    return x_train, y_train
 
 
 def create_exp_save_dir(exp_dir, n_subjects, n_models):
@@ -149,6 +154,7 @@ if __name__ == "__main__":
     # Load config info and create save dir
     ############################################
     n_training_samps = TP['n_training_samps_noise']
+    n_valid_samps = TP['n_training_samps_noise'] * TP['valid_proportion']
     model_specs = load_model_specs('config_model.yaml')
 
     # Create folder for saving current experiment, copy over config files
@@ -187,15 +193,30 @@ if __name__ == "__main__":
 
         # XXX: Consider moving to a keras `fit_generator` approach so that new
         # data is generated for each epoch
-        sim_src_act = np.random.randn(src_dim, TP['n_training_samps_noise']) * \
-            TP['src_act_scaler']
-        evoked, stc = gen_evoked_subject(sim_src_act, fwd, cov, evoked_info,
-                                         TP['dt'], TP['SNR'])
 
-        # Normalize training data to lie between -1 and 1
-        # XXX: Appropriate to do this? See batch normalization papers
-        x_train = norm_transpose(evoked.data)
-        y_train = norm_transpose(sim_src_act)
+        sim_src_act = np.random.randn(src_dim, TP['n_training_samps_noise'])
+        sim_src_act *= TP['src_act_scaler']
+
+        train_x, train_y = gen_evoked_subject(sim_src_act, fwd, cov,
+                                              evoked_info, TP['dt'], TP['SNR'])
+        '''
+        def subj_spec_generator(batch_size, epoch_size):
+            while 1:
+                sim_src_act = np.random.randn(src_dim,
+                                            TP['n_training_samps_noise']) * \
+                    TP['src_act_scaler']
+
+                train_x, train_y = gen_evoked_subject(sim_src_act, fwd, cov,
+                                                      evoked_info, TP['dt'],
+                                                      TP['SNR'])
+                i = 0
+                while i < epoch_size:
+                    yield (train_x[i:i + batch_size], train_y[i:i + batch_size])
+                    if i + batch_size > epoch_size:
+                        i = 0
+                    else:
+                        i += batch_size
+        '''
 
         ############################################
         # Train neural network
@@ -218,11 +239,24 @@ if __name__ == "__main__":
                 os.mkdir(temp_tb_logdir)
                 callbacks[2].log_dir = temp_tb_logdir
 
-            history = model.fit(x_train, y_train,
+            history = model.fit(train_x, train_y,
                                 nb_epoch=model_spec['n_epochs'],
                                 batch_size=model_spec['batch_size'],
                                 validation_split=TP['valid_proportion'],
                                 callbacks=callbacks)
+
+            '''
+            model.fit_generator(subj_spec_generator(model_spec['batch_size'],
+                                                    TP['n_training_samps_noise']),
+                                samples_per_epoch=TP['n_training_samps_noise'],
+                                nb_epoch=model_spec['n_epochs'],
+                                validation_data=subj_spec_generator(
+                                    model_spec['batch_size'],
+                                    TP['n_training_samps_noise']),
+                                nb_val_samples=n_valid_samps,
+                                callbacks=callbacks,
+                                max_q_size=1)
+            '''
 
             if si is 0:
                 keras_plot(model, show_shapes=True,
