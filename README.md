@@ -14,3 +14,5 @@ Dependencies
 - [keras](https://keras.io)
 - [tensorflow](https://www.tensorflow.org)
 - [mne-python](https://github.com/mne-tools/mne-python)
+- [docopt](https://github.com/docopt/docopt)
+- [pydog-ng](https://github.com/pydot/pydog-ng) (for plotting network architectures)
