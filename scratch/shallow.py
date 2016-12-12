@@ -18,7 +18,7 @@ from __future__ import print_function
 import os
 import os.path as op
 import numpy as np
-from time import strftime
+from time import strftime, sleep
 import pprint
 from shutil import copy2
 from copy import deepcopy
@@ -243,7 +243,10 @@ if __name__ == "__main__":
                                 nb_epoch=model_spec['n_epochs'],
                                 batch_size=model_spec['batch_size'],
                                 validation_split=TP['valid_proportion'],
-                                callbacks=callbacks)
+                                callbacks=callbacks,
+                                verbose=2)
+
+            sleep(0.25)  # Try to deal with delayed garbage collection
 
             '''
             model.fit_generator(subj_spec_generator(model_spec['batch_size'],
