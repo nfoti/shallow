@@ -1,18 +1,18 @@
 # model_config.yaml
 # @author: wronk
-# Specify the neural network architectures
 
+# Specify the neural network architectures (order is input -> output)
 arch: 
     - [1000, 1000, 'None']
-    - [1000, 4000, 'None']
-    - [4000, 1000, 'None']
-    - [4000, 4000, 'None']
+    - [3000, 3000, 'None']
+    - [500, 1000, 2000, 'None']
+    - [2000, 1000, 500, 'None']
 
 activation: 
-    - 'relu'
+    - 'sigmoid'
 
 dropout:
-    - 0.0
+    - 0.5
 
 optimizer:
     - 'adam'
@@ -20,8 +20,18 @@ optimizer:
 loss:
     - 'mse'
 
+# Specify l1, l2 regularizer strength for the model (in order)
+w_reg:
+    - [0.0001, 0.0001]
+    - [0.001, 0.001]
+    - [0., 0.001]
+    - [0., 0.01]
+
 metrics: 
     ['mse']
 
 n_epochs:
-    - 10000
+    - 5
+
+batch_size:
+    - 25

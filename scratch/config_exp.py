@@ -24,13 +24,12 @@ exp_fold = 'exp_results'
 # Model training params
 training_params = dict(dt=0.001,
                        SNR=np.inf,
-                       n_training_samps_noise=1e6,  # Number of noise data samples
-                       n_training_samps_sparse=0,  # Number of sparse data samples
-                       src_act_scaler=1e-7,
-                       batch_size=100,
+                       n_training_samps_noise=int(5e4),  # Number of noise data samples
+                       n_training_samps_sparse=int(0),  # Number of sparse data samples
+                       src_act_scaler=1.,
                        valid_proportion=0.2)
 
 # Model evaluation params
-eval_params = dict(n_avg_verts=25,  # Number of verts to avg when determining est position
+eval_params = dict(n_avg_verts=32,  # Number of verts to avg when determining est position
                    n_test_verts=1000,  # Probably should be <= 1000 to avoid mem problems
                    linear_inv='MNE')  # sLORETA or MNE
