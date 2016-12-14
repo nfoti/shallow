@@ -30,6 +30,7 @@ training_params = dict(dt=0.001,
                        valid_proportion=0.2)
 
 # Model evaluation params
-eval_params = dict(n_avg_verts=32,  # Number of verts to avg when determining est position
+eval_params = dict(n_avg_verts=25,  # Number of verts to avg when determining est position
                    n_test_verts=1000,  # Probably should be <= 1000 to avoid mem problems
-                   linear_inv='MNE')  # sLORETA or MNE
+                   linear_inv='MNE',  # sLORETA or MNE
+                   score_methods=['loc_25_acc', 'point_spread_25', 'l2_err'])
